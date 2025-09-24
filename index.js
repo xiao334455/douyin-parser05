@@ -24,7 +24,7 @@ app.post('/parse', async (req, res) => {
     });
 
     const finalUrl = jump.headers.location;
-    const videoId = finalUrl.match(/(?:video|note)\/(\d+)/)?.[1];
+    const videoId = new URL(finalUrl).pathname.match(/(?:video|note)\/(\d+)/)?.[1];
     if (!videoId) return res.status(400).json({ error: "无法提取 video_id" });
 
     // 获取视频数据
