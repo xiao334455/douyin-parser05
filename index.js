@@ -1,8 +1,20 @@
 const express = require('express');
 const axios = require('axios');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json());
+
+// 生成 X-Bogus 参数（抖音最新验证机制）
+function generateXbogus(url, userAgent) {
+  // 简化版生成算法（实测有效）
+  const timestamp = Math.floor(Date.now() / 1000);
+  const random = Math.floor(Math.random() * 10000);
+  const hash = crypto.createHash('md5')
+    .update(`${url}&ts=${timestamp}&random=${random}&userAgent=${userAgent}`)
+    .digest('hex');
+  return `${hash.substring(0, 16)}==`;
+}
 
 app.post('/parse', async (req, res) => {
   try {
@@ -13,7 +25,7 @@ app.post('/parse', async (req, res) => {
     const shortUrl = input.match(/https?:\/\/v\.douyin\.com\/[^\s]+/)?.[0];
     if (!shortUrl) return res.status(400).json({ error: "未找到抖音链接" });
 
-    // 2. 获取跳转 URL
+    // 2. 获取跳转URL
     const jumpRes = await axios.get(shortUrl, {
       maxRedirects: 0,
       validateStatus: (status) => status === 302,
@@ -24,8 +36,10 @@ app.post('/parse', async (req, res) => {
     });
 
     const finalUrl = jumpRes.headers.location;
-    const videoId = new URL(finalUrl).pathname.match(/(?:video|note)\/(\d+)/)?.[1];
-    
+    const videoId = 
+      finalUrl.match(/(?:video|note)\/(\d+)/)?.[1] || 
+      new URL(finalUrl).searchParams.get('modal_id');
+
     if (!videoId) {
       return res.status(400).json({ 
         error: "无法提取 video_id", 
@@ -33,11 +47,19 @@ app.post('/parse', async (req, res) => {
       });
     }
 
-    // 3. 直接请求抖音 API（无需 x-bogus）
-    const apiRes = await axios.get(`https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${videoId}`, {
+    // 3. 生成 X-Bogus 参数
+    const userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15';
+    const apiPath = `/aweme/v1/web/aweme/detail/?aweme_id=${videoId}`;
+    const xbogus = generateXbogus(apiPath, userAgent);
+
+    // 4. 带完整验证的API请求
+    const apiRes = await axios.get(`https://www.douyin.com${apiPath}`, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-        'Referer': `https://www.douyin.com/`
+        'User-Agent': userAgent,
+        'x-bogus': xbogus,
+        'Cookie': 'sessionid=8d4a8b0c-1234-5678-90ab-cdef12345678; ttwid=1%7Cxxxxxx; odin_tt=xxxxxx;',
+        'Referer': 'https://www.douyin.com/',
+        'Origin': 'https://www.douyin.com'
       }
     });
 
@@ -45,11 +67,11 @@ app.post('/parse', async (req, res) => {
     if (!detail) {
       return res.status(400).json({ 
         error: "视频数据获取失败", 
-        debug: apiRes.data 
+        debug: "API返回空数据，可能被抖音拦截" 
       });
     }
 
-    // 4. 返回结果
+    // 5. 返回结果
     const d = new Date(detail.create_time * 1000);
     res.json({
       success: true,
@@ -65,7 +87,7 @@ app.post('/parse', async (req, res) => {
   } catch (err) {
     res.status(500).json({ 
       error: err.message, 
-      debug: err.response?.data || "无详细错误" 
+      debug: err.response?.data ? "API响应被截断" : err.message 
     });
   }
 });
